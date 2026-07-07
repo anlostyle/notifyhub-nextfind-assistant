@@ -15,6 +15,25 @@ def media_type(item):
     return "movie" if item.get("type") == "电影" else "tv"
 
 
+def is_ongoing(item):
+    text = " ".join(str(item.get(k) or "") for k in ("year", "status", "air_status", "release_status"))
+    return bool(re.search(r"现在|至今|连载|播出|ongoing|returning|present", text, re.I))
+
+
+def search_status(item, is_movie):
+    if is_movie:
+        if item.get("is_in_library"):
+            return "已入库"
+        return "订阅中" if item.get("is_subscribed") else "未订阅"
+    if item.get("is_in_library"):
+        if is_ongoing(item):
+            return "已入库｜追更中" if item.get("is_subscribed") else "已入库｜未追更"
+        return "已入库｜已完结"
+    if item.get("is_subscribed"):
+        return "订阅中"
+    return "未订阅｜连载中" if is_ongoing(item) else "未订阅｜已完结"
+
+
 async def api(method, path, params=None, body=None):
     if not config.nextfind_base_url:
         return {"status": "error", "message": "NextFind OpenAPI 地址未配置"}
@@ -46,12 +65,7 @@ def fmt_search(items):
         is_movie = kind in {"movie", "电影"}
         icon = "🎬" if is_movie else "📺"
         display_type = item.get("type") or ("电影" if is_movie else "电视剧")
-        if item.get("is_in_library"):
-            status = "已入库"
-        elif item.get("is_subscribed"):
-            status = "订阅中"
-        else:
-            status = "未订阅"
+        status = search_status(item, is_movie)
         lines.append(f"\n{i}. {icon} {item.get('title')} ({item.get('year','')})")
         lines.append(f"   └ {display_type}｜{status}")
     lines.append("\n回复数字看资源，例如：1")

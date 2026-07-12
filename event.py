@@ -1,5 +1,6 @@
 import asyncio
 import datetime
+import html
 import logging
 import re
 import threading
@@ -188,6 +189,23 @@ class NextFindLogNotifier(threading.Thread):
         media_path = "movie" if match["media_type"] == "movie" else "tv"
         return f"https://www.themoviedb.org/{media_path}/{match['tmdb_id']}"
 
+    def media_info(self, match) -> Dict:
+        try:
+            res = httpx.get(
+                f"{config.nextfind_base_url}/search",
+                params={"query": match["title"], "type": "all"},
+                headers={"X-API-Key": config.nextfind_api_key},
+                timeout=HTTP_TIMEOUT,
+            )
+            data = res.json()
+        except Exception as e:
+            logger.warning("%s 获取订阅媒体信息失败: %s", LOG_PREFIX, e)
+            return {}
+        for item in data.get("data") or data.get("results") or []:
+            if str(item.get("id") or item.get("tmdb_id") or "") == match["tmdb_id"]:
+                return item
+        return {}
+
     def normalize_poster_url(self, value) -> str:
         value = str(value or "").strip()
         if not value:
@@ -203,26 +221,33 @@ class NextFindLogNotifier(threading.Thread):
             return "https://image.tmdb.org/t/p/w500" + value
         return value
 
-    def poster_url(self, match) -> str:
+    def poster_url(self, item) -> str:
+        for key in ("poster", "poster_path", "poster_url", "cover", "image", "picurl"):
+            url = self.normalize_poster_url(item.get(key))
+            if url:
+                return url
+        return ""
+
+    def tmdb_overview(self, match) -> str:
         try:
             res = httpx.get(
-                f"{config.nextfind_base_url}/search",
-                params={"query": match["title"], "type": "all"},
-                headers={"X-API-Key": config.nextfind_api_key},
+                self.tmdb_url(match),
+                params={"language": "zh-CN"},
+                follow_redirects=True,
+                headers={"User-Agent": "Mozilla/5.0"},
                 timeout=HTTP_TIMEOUT,
             )
-            data = res.json()
         except Exception as e:
-            logger.warning("%s 获取订阅封面失败: %s", LOG_PREFIX, e)
+            logger.warning("%s 获取 TMDB 简介失败: %s", LOG_PREFIX, e)
             return ""
-        for item in data.get("data") or data.get("results") or []:
-            if str(item.get("id") or item.get("tmdb_id") or "") != match["tmdb_id"]:
-                continue
-            for key in ("poster", "poster_path", "poster_url", "cover", "image", "picurl"):
-                url = self.normalize_poster_url(item.get(key))
-                if url:
-                    return url
-        return ""
+        meta = re.search(r'<meta[^>]+name="description"[^>]+content="([^"]*)"', res.text)
+        meta = meta or re.search(r'<meta[^>]+property="og:description"[^>]+content="([^"]*)"', res.text)
+        return html.unescape(meta.group(1)).strip() if meta else ""
+
+    def overview(self, item, match) -> str:
+        text = next((str(item.get(k) or "").strip() for k in ("overview", "description", "summary", "plot") if item.get(k)), "")
+        text = text or self.tmdb_overview(match)
+        return text[:220] + ("..." if len(text) > 220 else "") if text else "暂无简介"
 
     def format_message(self, match, source="NextFind OpenAPI"):
         media_type = "电影" if match["media_type"] == "movie" else "电视剧"
@@ -239,17 +264,21 @@ class NextFindLogNotifier(threading.Thread):
 
     def format_article(self, match, source="NextFind OpenAPI") -> Dict[str, str]:
         media_type = "电影" if match["media_type"] == "movie" else "电视剧"
+        item = self.media_info(match)
+        year = str(item.get("year") or "").strip()
+        title = f"{match['title']} ({year})" if year else match["title"]
         return {
-            "title": f"新增订阅：{match['title']}",
+            "title": f"新增订阅：{title}",
             "description": (
                 f"用户：{self.username(match)}\n"
                 f"类型：{media_type}\n"
                 f"TMDB：{match['tmdb_id']}\n"
                 f"时间：{match['time']}\n"
-                f"来源：{source}"
+                f"来源：{source}\n"
+                f"简介：{self.overview(item, match)}"
             ),
             "url": self.tmdb_url(match),
-            "picurl": self.poster_url(match),
+            "picurl": self.poster_url(item),
         }
 
     def poll(self, send=True):

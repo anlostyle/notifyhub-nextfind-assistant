@@ -65,4 +65,4 @@ https://你的NotifyHub域名/api/plugins/nextfind_assistant/chat
 
 插件收到企业微信回调后会立即返回 `success`，处理完成后再通过企业微信主动消息发送结果。
 
-订阅通知通过轮询 NextFind `/logs` 识别新增订阅事件；RSS 自动订阅不会推送，用户名为空时按管理员订阅显示。
+订阅通知通过轮询 NextFind `/logs` 识别新增订阅事件；RSS 自动订阅不会推送，用户名为空时按管理员订阅显示。通知标题带年份，简介优先读取 NextFind 返回字段，缺失时从 TMDB 中文页面获取。

@@ -1,9 +1,12 @@
 import asyncio
 import datetime
 import logging
+import re
 import threading
+import time
 from dataclasses import dataclass
 from typing import Dict, Optional
+from urllib.parse import urlsplit
 from xml.etree.ElementTree import fromstring
 
 import httpx
@@ -16,7 +19,7 @@ from notifyhub.common.response import json_500
 from notifyhub.plugins.components.qywx_Crypt.WXBizMsgCrypt import WXBizMsgCrypt
 
 from .nextfind import handle_command
-from .utils import config
+from .utils import PluginState, config
 
 LOG_PREFIX = "「NextFind 企业微信助手」"
 HTTP_TIMEOUT = 30
@@ -24,6 +27,16 @@ TOKEN_EXPIRE_BUFFER = 500
 logger = logging.getLogger(__name__)
 token_cache = Cache(maxsize=1)
 nextfind_assistant_router = APIRouter(prefix="/nextfind_assistant", tags=["nextfind_assistant"])
+subscribe_log_pattern = re.compile(
+    r"^(?P<time>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),\d+ .*?"
+    r"\[OpenAPI\] 添加订阅: (?P<title>.+?) "
+    r"\(TMDB ID: (?P<tmdb_id>\d+), 类型: (?P<media_type>\w+), 用户名: (?P<username>.*?)\)"
+)
+web_subscribe_log_pattern = re.compile(
+    r"^(?P<time>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),\d+ .*?"
+    r"用户添加订阅: (?P<title>.+?) "
+    r"\(TMDB ID: (?P<tmdb_id>\d+), 类型: (?P<media_type>\w+), 来源: (?P<source>\w+)\)"
+)
 
 
 @dataclass
@@ -78,6 +91,27 @@ class QywxMessageSender:
         ).json()
         if data.get("errcode") != 0:
             logger.error("%s 发送企业微信消息失败: %s", LOG_PREFIX, data)
+            return False
+        return True
+
+    def send_news_message(self, article: Dict[str, str], to_user: str) -> bool:
+        token = self.get_access_token()
+        if not token:
+            return False
+        payload = {
+            "touser": to_user,
+            "agentid": config.sAgentid,
+            "msgtype": "news",
+            "news": {"articles": [article]},
+        }
+        data = httpx.post(
+            f"{config.qywx_base_url.strip('/')}/cgi-bin/message/send",
+            params={"access_token": token},
+            json=payload,
+            timeout=HTTP_TIMEOUT,
+        ).json()
+        if data.get("errcode") != 0:
+            logger.error("%s 发送企业微信 news 消息失败: %s", LOG_PREFIX, data)
             return False
         return True
 
@@ -140,7 +174,122 @@ class NextFindThread(threading.Thread):
             self.sender.send_text_message("处理失败：" + str(e), self.message.from_user)
 
 
+class NextFindLogNotifier(threading.Thread):
+    def __init__(self):
+        super().__init__(name="NextFindLogNotifier", daemon=True)
+        self.sender = QywxMessageSender()
+        self.state = PluginState()
+        self.ready = False
+
+    def username(self, match) -> str:
+        return (match.groupdict().get("username") or "").strip() or "管理员"
+
+    def tmdb_url(self, match) -> str:
+        media_path = "movie" if match["media_type"] == "movie" else "tv"
+        return f"https://www.themoviedb.org/{media_path}/{match['tmdb_id']}"
+
+    def normalize_poster_url(self, value) -> str:
+        value = str(value or "").strip()
+        if not value:
+            return ""
+        if value.startswith(("http://", "https://")):
+            return value
+        if value.startswith("//"):
+            return "https:" + value
+        if value.startswith("/api/"):
+            base = urlsplit(config.nextfind_base_url)
+            return f"{base.scheme}://{base.netloc}{value}" if base.scheme and base.netloc else value
+        if value.startswith("/"):
+            return "https://image.tmdb.org/t/p/w500" + value
+        return value
+
+    def poster_url(self, match) -> str:
+        try:
+            res = httpx.get(
+                f"{config.nextfind_base_url}/search",
+                params={"query": match["title"], "type": "all"},
+                headers={"X-API-Key": config.nextfind_api_key},
+                timeout=HTTP_TIMEOUT,
+            )
+            data = res.json()
+        except Exception as e:
+            logger.warning("%s 获取订阅封面失败: %s", LOG_PREFIX, e)
+            return ""
+        for item in data.get("data") or data.get("results") or []:
+            if str(item.get("id") or item.get("tmdb_id") or "") != match["tmdb_id"]:
+                continue
+            for key in ("poster", "poster_path", "poster_url", "cover", "image", "picurl"):
+                url = self.normalize_poster_url(item.get(key))
+                if url:
+                    return url
+        return ""
+
+    def format_message(self, match, source="NextFind OpenAPI"):
+        media_type = "电影" if match["media_type"] == "movie" else "电视剧"
+        username = self.username(match)
+        return (
+            "📌 NextEmby 新增订阅\n\n"
+            f"用户：{username}\n"
+            f"片名：{match['title']}\n"
+            f"类型：{media_type}\n"
+            f"TMDB：{match['tmdb_id']}\n"
+            f"时间：{match['time']}\n"
+            f"来源：{source}"
+        )
+
+    def format_article(self, match, source="NextFind OpenAPI") -> Dict[str, str]:
+        media_type = "电影" if match["media_type"] == "movie" else "电视剧"
+        return {
+            "title": f"新增订阅：{match['title']}",
+            "description": (
+                f"用户：{self.username(match)}\n"
+                f"类型：{media_type}\n"
+                f"TMDB：{match['tmdb_id']}\n"
+                f"时间：{match['time']}\n"
+                f"来源：{source}"
+            ),
+            "url": self.tmdb_url(match),
+            "picurl": self.poster_url(match),
+        }
+
+    def poll(self, send=True):
+        if not all([config.nextfind_base_url, config.nextfind_api_key, config.nextfind_log_notify_users]):
+            return
+        res = httpx.get(
+            f"{config.nextfind_base_url}/logs",
+            params={"lines": config.nextfind_log_lines},
+            headers={"X-API-Key": config.nextfind_api_key},
+            timeout=HTTP_TIMEOUT,
+        )
+        data = res.json()
+        for line in data.get("data") or []:
+            match = subscribe_log_pattern.search(line)
+            source = "NextFind OpenAPI"
+            if not match:
+                match = web_subscribe_log_pattern.search(line)
+                source = "NextFind 网页端"
+                if not match or match["source"] == "rss":
+                    continue
+            if self.state.seen_log(line):
+                continue
+            if send and self.ready:
+                sent = self.sender.send_news_message(self.format_article(match, source), config.nextfind_log_notify_users)
+                if not sent:
+                    self.sender.send_text_message(self.format_message(match, source), config.nextfind_log_notify_users)
+        self.ready = True
+
+    def run(self):
+        while True:
+            try:
+                self.poll()
+            except Exception as e:
+                logger.error("%s 订阅日志通知检查失败: %s", LOG_PREFIX, e, exc_info=True)
+            time.sleep(config.nextfind_log_poll_seconds)
+
+
 processor = QywxProcessor()
+notifier = NextFindLogNotifier()
+notifier.start()
 
 
 @nextfind_assistant_router.get("/chat")

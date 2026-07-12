@@ -5,7 +5,7 @@
   "author": "Codex",
   "logo": "",
   "thumbnailurl": "",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "documentation": "",
   "path": "/nextfind_assistant",
   "configField": [
@@ -21,6 +21,27 @@
       "fieldType": "string",
       "label": "NextFind API Key",
       "helpText": "NextFind 系统设置里的 OpenAPI Key",
+      "defaultValue": ""
+    },
+    {
+      "fieldName": "nextfind_log_notify_users",
+      "fieldType": "string",
+      "label": "订阅通知接收人",
+      "helpText": "企业微信 touser，留空默认 @all",
+      "defaultValue": ""
+    },
+    {
+      "fieldName": "nextfind_log_poll_seconds",
+      "fieldType": "string",
+      "label": "订阅通知轮询秒数",
+      "helpText": "留空默认 60，最小 10",
+      "defaultValue": ""
+    },
+    {
+      "fieldName": "nextfind_log_lines",
+      "fieldType": "string",
+      "label": "每次读取日志行数",
+      "helpText": "留空默认 500，日志量大可调高",
       "defaultValue": ""
     },
     {
@@ -68,6 +89,8 @@
     { "fieldType": "text", "value": "搜 阿凡达" },
     { "fieldType": "text", "value": "1：搜索结果阶段查看资源；资源列表阶段直接转存" },
     { "fieldType": "text", "value": "订阅1：订阅第 1 个搜索结果" },
-    { "fieldType": "text", "value": "订阅列表：查看当前订阅" }
+    { "fieldType": "text", "value": "订阅列表：查看当前订阅" },
+    { "fieldType": "title", "value": "订阅通知" },
+    { "fieldType": "text", "value": "轮询 NextFind /logs，发现 NextEmby OpenAPI 新增订阅后推送企业微信" }
   ]
 }

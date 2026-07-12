@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import time
+import hashlib
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -61,6 +62,24 @@ class Config:
     def sEncodingAESKey(self) -> str:
         return self.get("sEncodingAESKey", "")
 
+    @property
+    def nextfind_log_notify_users(self) -> str:
+        return self.get("nextfind_log_notify_users", "") or "@all"
+
+    @property
+    def nextfind_log_poll_seconds(self) -> int:
+        try:
+            return max(10, int(self.get("nextfind_log_poll_seconds", "") or 60))
+        except Exception:
+            return 60
+
+    @property
+    def nextfind_log_lines(self) -> int:
+        try:
+            return max(50, int(self.get("nextfind_log_lines", "") or 500))
+        except Exception:
+            return 500
+
 
 config = Config()
 
@@ -87,3 +106,26 @@ class UserState:
         current["updated_at"] = time.time()
         data[user] = current
         self.path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+
+class PluginState:
+    def __init__(self):
+        base = Path(os.environ.get("WORKDIR") or "/data")
+        self.path = base / "plugins" / PLUGIN_ID / "plugin_state.json"
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _load(self) -> Dict[str, Any]:
+        try:
+            return json.loads(self.path.read_text(encoding="utf-8") or "{}")
+        except Exception:
+            return {}
+
+    def seen_log(self, line: str) -> bool:
+        key = hashlib.sha1(line.encode("utf-8")).hexdigest()
+        data = self._load()
+        seen = data.get("seen_nextfind_logs", [])
+        if key in seen:
+            return True
+        data["seen_nextfind_logs"] = (seen + [key])[-500:]
+        self.path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        return False

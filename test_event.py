@@ -21,6 +21,12 @@ class MediaInfoTest(unittest.TestCase):
 
         self.assertEqual(item["poster_path"], "/poster.jpg")
         self.assertTrue(get.call_args_list[1].args[0].endswith("/subscriptions"))
+        self.assertEqual(
+            event.NextFindLogNotifier.__new__(event.NextFindLogNotifier).normalize_poster_url(
+                "/api/tmdb/image/poster.jpg"
+            ),
+            "https://image.tmdb.org/t/p/w780/poster.jpg",
+        )
 
 
 if __name__ == "__main__":

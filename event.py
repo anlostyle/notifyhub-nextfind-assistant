@@ -218,6 +218,8 @@ class NextFindLogNotifier(threading.Thread):
             return value
         if value.startswith("//"):
             return "https:" + value
+        if value.startswith("/api/tmdb/image/"):
+            return "https://image.tmdb.org/t/p/w780/" + value.rsplit("/", 1)[-1]
         if value.startswith("/api/"):
             base = urlsplit(config.nextfind_base_url)
             return f"{base.scheme}://{base.netloc}{value}" if base.scheme and base.netloc else value

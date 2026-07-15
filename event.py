@@ -190,20 +190,24 @@ class NextFindLogNotifier(threading.Thread):
         return f"https://www.themoviedb.org/{media_path}/{match['tmdb_id']}"
 
     def media_info(self, match) -> Dict:
-        try:
-            res = httpx.get(
-                f"{config.nextfind_base_url}/search",
-                params={"query": match["title"], "type": "all"},
-                headers={"X-API-Key": config.nextfind_api_key},
-                timeout=HTTP_TIMEOUT,
-            )
-            data = res.json()
-        except Exception as e:
-            logger.warning("%s 获取订阅媒体信息失败: %s", LOG_PREFIX, e)
-            return {}
-        for item in data.get("data") or data.get("results") or []:
-            if str(item.get("id") or item.get("tmdb_id") or "") == match["tmdb_id"]:
-                return item
+        for path, params in (
+            ("/search", {"query": match["title"], "type": "all"}),
+            ("/subscriptions", None),
+        ):
+            try:
+                res = httpx.get(
+                    config.nextfind_base_url + path,
+                    params=params,
+                    headers={"X-API-Key": config.nextfind_api_key},
+                    timeout=HTTP_TIMEOUT,
+                )
+                data = res.json()
+            except Exception as e:
+                logger.warning("%s 获取订阅媒体信息失败 (%s): %s", LOG_PREFIX, path, e)
+                continue
+            for item in data.get("data") or data.get("results") or []:
+                if str(item.get("id") or item.get("tmdb_id") or "") == match["tmdb_id"]:
+                    return item
         return {}
 
     def normalize_poster_url(self, value) -> str:
